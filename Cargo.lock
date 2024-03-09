@@ -197,6 +197,7 @@ dependencies = [
  "chrono",
  "itertools",
  "serde",
+ "serde_json",
  "ureq",
 ]
 

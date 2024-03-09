@@ -1,15 +1,16 @@
 use anyhow::Result;
 use base64::Engine;
-use chrono::{Datelike, Days, NaiveDate, Weekday};
+use chrono::{Datelike, Days, Months, NaiveDate, Weekday};
 use itertools::Itertools;
 use serde::Deserialize;
-use std::env;
+use std::{env, error};
 
 fn main() {
     let bamboo_company_domain = require_from_env("BAMBOO_COMPANY_DOMAIN");
     let bamboo_api_key = require_from_env("BAMBOO_API_KEY");
+    let slack_webhook_url = require_from_env("SLACK_WEBHOOK_URL");
 
-    //let today = chrono::Local::now().date_naive().checked_add_days(Days::new(2)).expect("msg");
+    // let today = chrono::Local::now().date_naive();
     let today = chrono::NaiveDate::parse_from_str("2024-04-01", "%Y-%m-%d").expect("");
 
     let mut leave = fetch_leave_from_bamboo(bamboo_company_domain, bamboo_api_key, today)
@@ -29,7 +30,7 @@ fn main() {
         println!("{:?}", l)
     }
 
-    send_to_slack(&mut leave, today).expect("failed to send leave to slack");
+    send_to_slack(&mut leave, today, slack_webhook_url).unwrap();
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -38,6 +39,12 @@ struct LeavePeriod {
     name: String,
     start: NaiveDate,
     end: NaiveDate,
+}
+
+impl LeavePeriod {
+    fn includes(&self, date: NaiveDate) -> bool {
+        self.start <= date && self.end >= date
+    }
 }
 
 fn fetch_leave_from_bamboo(
@@ -53,6 +60,13 @@ fn fetch_leave_from_bamboo(
         .set("Accept", "application/json")
         .set("Authorization", &basic_auth_header(api_key.as_str(), "x"))
         .query("start", day.to_string().as_str())
+        .query(
+            "end",
+            day.checked_add_months(Months::new(12))
+                .expect("invalid date")
+                .to_string()
+                .as_str(),
+        )
         .call()?
         .into_json::<Vec<LeavePeriod>>()?;
 
@@ -66,7 +80,7 @@ fn fetch_leave_from_bamboo(
 /// - Occur on adjacent days
 /// - Occur with only a weekend in-between.
 fn first_contiguous_period(leave: &mut [LeavePeriod]) -> Vec<LeavePeriod> {
-    leave.sort_by_key(|l| (l.start.to_string(), l.end.to_string()));
+    leave.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
 
     let a = leave
         .iter_mut()
@@ -92,36 +106,126 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     // Crossing a weekend
 }
 
-fn send_to_slack(leave: &mut [LeavePeriod], today: NaiveDate) -> Result<()> {
-    leave.sort_by_key(|l| (l.r#type.to_string(), l.name.to_string()));
-    let lines: Vec<String> = leave
-        .iter_mut()
-        .filter(|l| l.start <= today)
+fn send_to_slack(leave: &mut [LeavePeriod], today: NaiveDate, url: String) -> Result<()> {
+    leave.sort_by(|a, b| a.name.cmp(&b.name));
+
+    let mut message_contents: Vec<serde_json::Value> = Vec::new();
+
+    let holidays: Vec<serde_json::Value> = leave
+        .iter()
+        .filter(|l| l.r#type == "holiday" && l.includes(today))
         .map(|l| {
-            format!(
-                "* {}{}",
-                l.name,
-                if l.end != l.start {
-                    format!(
-                        " _(until {})_",
-                        l.end.succ_opt().expect("invalid date").format("%A %-d %B")
-                    )
-                } else {
-                    "".to_string()
-                }
-            )
+            ureq::json!({
+                "type": "rich_text_section",
+                "elements": [
+                    {
+                        "type": "text",
+                        "text": l.name,
+                    }
+                ]
+            })
         })
         .collect();
 
-    let message = if !lines.is_empty() {
-        format!("*Who's off today?*\n{}", lines.join("\n"))
-    } else {
-        "Nobody is off today! :tada:".to_string()
-    };
+    if !holidays.is_empty() {
+        message_contents.push(ureq::json!(
 
-    println!("{}", message);
+            {
+                "type": "header",
+                "text": {
+                    "type": "plain_text",
+                    "text": ":calendar: Holidays today",
+                    "emoji": true
+                }
+            }
+        ));
 
-    Ok(())
+        message_contents.push(ureq::json!(
+            {
+                "type": "rich_text",
+                "elements": [
+                    {
+                    "type": "rich_text_list",
+                    "style": "bullet",
+                    "elements": holidays,
+                }]
+            }
+        ));
+    }
+
+    let time_off: Vec<serde_json::Value> = leave
+        .iter()
+        .filter(|l| l.r#type == "timeOff" && l.includes(today))
+        .map(|l| {
+            let mut elements: Vec<serde_json::Value> = Vec::new();
+
+            elements.push(ureq::json!({
+                "type": "text",
+                "text": l.name,
+                "style": {
+                    "bold": true,
+                }
+            }));
+
+            if (l.start != l.end) {
+                elements.push(ureq::json!({
+                    "type": "text",
+                    "text": format!(
+                        " (until {})",
+                        l.end.succ_opt().unwrap().format("%A, %-d %B")
+                    ),
+                    "style": {
+                        "italic": true,
+                    }
+                }));
+            }
+
+            ureq::json!({
+                "type": "rich_text_section",
+                "elements": elements,
+            })
+        })
+        .collect();
+
+    // if !time_off.is_empty() {
+    //     message_contents.push(ureq::json!({
+    //         "type": "rich_text",
+    //         "elements": [{
+    //             "type": "rich_text_list",
+    //             "style": "bullet",
+    //             "elements": time_off,
+    //         }]
+    //     }))
+    // }
+
+    // FIXME handle empty message content
+
+    // if !holidays.is_empty() {
+    //     message += &format!("*:calendar: Holidays today:*\n{}\n\n", holidays);
+    // }
+
+    // if !time_off.is_empty() {
+    //     message += &format!("*Who's off today?*\n{}\n\n", time_off);
+    // }
+
+    // if message.is_empty() {
+    //     message += "Nobody is off today! :tada:";
+    // }
+
+    let message = ureq::json!({
+        "blocks": message_contents,
+    });
+
+    println!("{}", serde_json::to_string_pretty(&message).unwrap());
+
+    match ureq::post(&url).send_json(message) {
+        Ok(response) => Ok(()),
+        Err(ureq::Error::Status(code, response)) => {
+            println!("{}", response.into_string().unwrap());
+            panic!("huh");
+        }
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn require_from_env(key: &str) -> String {
