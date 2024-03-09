@@ -15,7 +15,7 @@ fn main() {
     let mut leave = fetch_leave_from_bamboo(bamboo_company_domain, bamboo_api_key, today)
         .expect("failed to fetch leave from Bamboo");
 
-    leave.sort_unstable_by_key(|v| (v.r#type.clone(), v.name.clone(), v.start.clone(), v.end.clone()));
+    leave.sort_unstable_by_key(|v| (v.r#type.clone(), v.name.clone(), v.start, v.end));
 
     println!("pre-condense");
     for l in &leave {
@@ -40,7 +40,11 @@ struct LeavePeriod {
     end: NaiveDate,
 }
 
-fn fetch_leave_from_bamboo(domain: String, api_key: String, day: NaiveDate) -> Result<Vec<LeavePeriod>> {
+fn fetch_leave_from_bamboo(
+    domain: String,
+    api_key: String,
+    day: NaiveDate,
+) -> Result<Vec<LeavePeriod>> {
     let url = format!(
         "https://api.bamboohr.com/api/gateway.php/{}/v1/time_off/whos_out/",
         domain
@@ -61,17 +65,17 @@ fn fetch_leave_from_bamboo(domain: String, api_key: String, day: NaiveDate) -> R
 /// - Occur on the same day
 /// - Occur on adjacent days
 /// - Occur with only a weekend in-between.
-fn first_contiguous_period(leave: &mut Vec<LeavePeriod>) -> Vec<LeavePeriod> {
+fn first_contiguous_period(leave: &mut [LeavePeriod]) -> Vec<LeavePeriod> {
     leave.sort_by_key(|l| (l.start.to_string(), l.end.to_string()));
 
     let a = leave
-        .into_iter()
+        .iter_mut()
         .into_grouping_map_by(|l| l.name.to_string())
         .fold_first(|a, _, b| {
             // Merge a and b if they are the same, adjacent, or separated by a weekend.
             if same_or_adjacent_workdays(a.end, b.start) {
                 // Extend a to cover both a and b.
-                a.end = b.end.clone();
+                a.end = b.end;
             }
             a
         });
@@ -88,17 +92,20 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     // Crossing a weekend
 }
 
-fn send_to_slack(leave: &mut Vec<LeavePeriod>, today: NaiveDate) -> Result<()> {
+fn send_to_slack(leave: &mut [LeavePeriod], today: NaiveDate) -> Result<()> {
     leave.sort_by_key(|l| (l.r#type.to_string(), l.name.to_string()));
     let lines: Vec<String> = leave
-        .into_iter()
+        .iter_mut()
         .filter(|l| l.start <= today)
         .map(|l| {
             format!(
                 "* {}{}",
                 l.name,
                 if l.end != l.start {
-                    format!(" _(until {})_", l.end.succ_opt().expect("invalid date").format("%A %-d %B"))
+                    format!(
+                        " _(until {})_",
+                        l.end.succ_opt().expect("invalid date").format("%A %-d %B")
+                    )
                 } else {
                     "".to_string()
                 }
@@ -118,7 +125,7 @@ fn send_to_slack(leave: &mut Vec<LeavePeriod>, today: NaiveDate) -> Result<()> {
 }
 
 fn require_from_env(key: &str) -> String {
-    env::var(key).expect(format!("missing required environment variable: {}", key).as_str())
+    env::var(key).unwrap_or_else(|_| panic!("missing required environment variable: {}", key))
 }
 
 fn basic_auth_header(username: &str, password: &str) -> String {
