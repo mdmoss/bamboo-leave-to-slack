@@ -78,7 +78,7 @@ fn fetch_leave_from_bamboo(
     Ok(leave)
 }
 
-/// Returns the first contiguous period of leave for each user (grouping by name). // TODO group by id.
+/// Returns the first contiguous period of leave for each user (grouping by name).
 ///
 /// Leave periods are adjacent if they:
 /// - Occur on the same day
