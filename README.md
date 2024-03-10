@@ -8,7 +8,7 @@ BambooHR has a Slack plugin, but it's pretty basic and has some shortcomings. Th
 
 - Shows holidays, which is useful in a team that spans multiple countries with holidays you might not be aware of.
 
-- Merges consecutive periods of leave, to try and better show when the person on leave will return. \
+- Merges consecutive periods of leave, to try and better show when the person on leave will return.
 
 ### Known shortcomings
 
@@ -25,3 +25,6 @@ BambooHR has a Slack plugin, but it's pretty basic and has some shortcomings. Th
 
 - Run the bot periodically. Cron is likely the easiest way, but you're free to choose your own adventure here.
 
+### BambooHR API key permissions
+
+If the BambooHR user you use to pull leave information has sufficient permissions, this bot will fetch and display the preferred name for users, rather than the name provided by the leave endpoint. This isn't well tested at this point in time, so your mileage may vary.
