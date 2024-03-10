@@ -325,7 +325,7 @@ fn send_to_slack(
             elements.push(ureq::json!({
                 "type": "text",
                 "text": format!(
-                    "   (until {})",
+                    " - until {}",
                     {
                         let back = l.time_off.return_date();
 
