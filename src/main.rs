@@ -36,7 +36,7 @@ fn main() {
     let mut current_holidays: Vec<Holiday> = leave
         .iter()
         .filter_map(|l| match l {
-            Leave::Holiday(h) => Some(h.clone()),
+            Leave::Holiday(h) if h.includes(date) => Some(h.clone()),
             _ => None,
         })
         .collect();
