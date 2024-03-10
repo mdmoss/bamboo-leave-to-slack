@@ -57,6 +57,7 @@ fn main() {
         &mut current_holidays,
         &mut leave_with_user_info,
         slack_webhook_url,
+        date,
     )
     .unwrap();
 }
@@ -132,6 +133,18 @@ enum Leave {
 impl TimeOff {
     fn includes(&self, date: NaiveDate) -> bool {
         self.start <= date && self.end >= date
+    }
+
+    fn return_date(&self) -> NaiveDate {
+        if self.end.weekday().num_days_from_monday() >= Weekday::Fri.num_days_from_monday() {
+            self.end
+                .checked_add_days(Days::new(
+                    (7 - self.end.weekday().num_days_from_monday()).into(),
+                ))
+                .unwrap()
+        } else {
+            self.end.checked_add_days(Days::new(1)).unwrap()
+        }
     }
 }
 
@@ -245,8 +258,8 @@ fn get_employee_info(
                 time_off,
             })
         }
-        Err(ureq::Error::Status(403, _)) => {
-            println!("warning: 403 on employee info fetch");
+        Err(ureq::Error::Status(status, _)) => {
+            println!("warning: {} on employee info fetch", status);
             Ok(TimeOffWithEmployeeInfo {
                 employee_info: None,
                 time_off,
@@ -260,6 +273,7 @@ fn send_to_slack(
     holidays: &mut [Holiday],
     time_off: &mut [TimeOffWithEmployeeInfo],
     url: String,
+    date: NaiveDate,
 ) -> Result<()> {
     holidays.sort_by(|a, b| {
         a.start
@@ -308,18 +322,31 @@ fn send_to_slack(
                 }
             }));
 
-            if l.time_off.start != l.time_off.end {
-                elements.push(ureq::json!({
-                    "type": "text",
-                    "text": format!(
-                        " (until {})",
-                        l.time_off.end.succ_opt().unwrap().format("%A, %-d %B")
-                    ),
-                    "style": {
-                        "italic": true,
+            elements.push(ureq::json!({
+                "type": "text",
+                "text": format!(
+                    "   (until {})",
+                    {
+                        let back = l.time_off.return_date();
+
+                        if date.succ_opt().unwrap() == back {
+                            "tomorrow".to_string()
+                        } else if date.checked_add_days(Days::new(7)).unwrap() > back {
+                            // This coming week - use the name of the day of the week.
+                            back.format("%A").to_string()
+                        } else if date.checked_add_days(Days::new(7)).unwrap() == back {
+                            // 7 days away, use the date but with "next".
+                            back.format("next %A").to_string()
+                        } else {
+                            // Further ahead - use the date.
+                            back.format("%-d %B").to_string()
+                        }
                     }
-                }));
-            }
+                ),
+                "style": {
+                    "italic": true,
+                }
+            }));
 
             ureq::json!({
                 "type": "rich_text_section",

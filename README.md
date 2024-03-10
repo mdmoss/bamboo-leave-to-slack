@@ -14,6 +14,10 @@ BambooHR has a Slack plugin, but it's pretty basic and has some shortcomings. Th
 
 - I've assumed that leave either side of a weekend (Saturday and Sunday) can be merged. I know this isn't the case for all people and places, but it meets my needs.
 
+- I'm pretty liberal with `.unwrap()` on date manipulations. I feel like if you've managed to get leave approved on a date that can't be represented, you've probably got more interesting issues to deal with. 
+
+- We could be smarter about leave that's scheduled starting Monday. I feel like we should be reporting the person as out starting on Saturday, for clarity.
+
 ## Setup and configuration
 
 - Download or build a binary (TODO: set up GitHub actions to publish automatically.)
