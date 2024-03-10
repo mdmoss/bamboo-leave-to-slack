@@ -30,10 +30,6 @@ fn main() {
 
     let leave = fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, date).unwrap();
 
-    for l in &leave {
-        println!("{:?}", l)
-    }
-
     let mut current_holidays: Vec<Holiday> = leave
         .iter()
         .filter_map(|l| match l {
