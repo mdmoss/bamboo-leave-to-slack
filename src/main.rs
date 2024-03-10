@@ -4,10 +4,13 @@ use chrono::{Datelike, Days, NaiveDate, Weekday};
 use clap::Parser;
 use itertools::Itertools;
 use serde::Deserialize;
+
 use std::env;
 
 // If you take more than a year of leave, we might miss it. Sorry.
 const LEAVE_LOOKAHEAD: Days = Days::new(365);
+
+const PEEK_BAMBOO_RESPONSE: bool = true;
 
 fn main() {
     let args: Args = Args::parse();
@@ -17,19 +20,48 @@ fn main() {
     let slack_webhook_url = require_from_env("SLACK_WEBHOOK_URL");
 
     let date = match args.date {
-        Some(date) => {
-            chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").expect("Invalid date argument (expected YYYY-MM-DD)")
-        }
+        Some(date) => chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
+            .expect("Invalid date argument (expected YYYY-MM-DD)"),
         None => chrono::Local::now().date_naive(),
     };
 
     println!("sending leave for {}", date);
 
-    let mut leave = fetch_leave_from_bamboo(bamboo_company_domain, bamboo_api_key, date).unwrap();
+    let leave = fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, date).unwrap();
 
-    let mut leave_per_user = current_contiguous_period_per_user(&mut leave, date);
+    for l in &leave {
+        println!("{:?}", l)
+    }
 
-    send_to_slack(&mut leave_per_user, slack_webhook_url).unwrap();
+    let mut current_holidays: Vec<Holiday> = leave
+        .iter()
+        .filter_map(|l| match l {
+            Leave::Holiday(h) => Some(h.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let mut time_off: Vec<TimeOff> = leave
+        .iter()
+        .filter_map(|l| match l {
+            Leave::TimeOff(t) => Some(t.clone()),
+            _ => None,
+        })
+        .collect();
+
+    let leave_per_user = current_contiguous_period_per_user(&mut time_off, date);
+
+    let mut leave_with_user_info: Vec<TimeOffWithEmployeeInfo> = leave_per_user
+        .iter()
+        .map(|t| get_employee_info(&bamboo_company_domain, &bamboo_api_key, t.clone()).unwrap())
+        .collect();
+
+    send_to_slack(
+        &mut current_holidays,
+        &mut leave_with_user_info,
+        slack_webhook_url,
+    )
+    .unwrap();
 }
 
 #[derive(Parser)]
@@ -39,31 +71,54 @@ struct Args {
 }
 
 #[derive(Deserialize, Debug, Clone)]
-struct LeavePeriod {
-    r#type: String, // I've observed "timeOff" and "holiday", but there might be more.
+struct Holiday {
     name: String,
     start: NaiveDate,
     end: NaiveDate,
 }
 
-impl LeavePeriod {
+#[derive(Deserialize, Debug, Clone)]
+struct TimeOff {
+    #[allow(non_snake_case)]
+    employeeId: usize, // FIXME can we convince serde to convert?
+    start: NaiveDate,
+    end: NaiveDate,
+}
+
+struct TimeOffWithEmployeeInfo {
+    time_off: TimeOff,
+    employee_preferred_name: Option<String>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(tag = "type", rename_all = "camelCase")]
+enum Leave {
+    Holiday(Holiday),
+    TimeOff(TimeOff),
+    #[serde(untagged)]
+    Unknown(serde_json::Value),
+}
+
+impl TimeOff {
     fn includes(&self, date: NaiveDate) -> bool {
         self.start <= date && self.end >= date
     }
 }
 
-fn fetch_leave_from_bamboo(
-    domain: String,
-    api_key: String,
-    day: NaiveDate,
-) -> Result<Vec<LeavePeriod>> {
+impl Holiday {
+    fn includes(&self, date: NaiveDate) -> bool {
+        self.start <= date && self.end >= date
+    }
+}
+
+fn fetch_leave_from_bamboo(domain: &str, api_key: &str, day: NaiveDate) -> Result<Vec<Leave>> {
     let url = format!(
         "https://api.bamboohr.com/api/gateway.php/{}/v1/time_off/whos_out/",
         domain
     );
-    let leave = ureq::get(url.as_str())
+    let resp = ureq::get(url.as_str())
         .set("Accept", "application/json")
-        .set("Authorization", &basic_auth_header(api_key.as_str(), "x"))
+        .set("Authorization", &basic_auth_header(api_key, "x"))
         .query("start", day.to_string().as_str())
         .query(
             "end",
@@ -72,8 +127,20 @@ fn fetch_leave_from_bamboo(
                 .to_string()
                 .as_str(),
         )
-        .call()?
-        .into_json::<Vec<LeavePeriod>>()?;
+        .call()?;
+
+    let leave = if PEEK_BAMBOO_RESPONSE {
+        let body = resp.into_json::<serde_json::Value>()?;
+        println!(
+            "\nResponse from BambooHR\n{}\n",
+            serde_json::to_string_pretty(&body)?
+        );
+
+        println!("{:?}", serde_json::from_value::<Vec<Leave>>(body.clone())?);
+        serde_json::from_value::<Vec<Leave>>(body)?
+    } else {
+        resp.into_json::<Vec<Leave>>()?
+    };
 
     Ok(leave)
 }
@@ -84,17 +151,14 @@ fn fetch_leave_from_bamboo(
 /// - Occur on the same day
 /// - Occur on adjacent days
 /// - Occur with only a weekend in-between.
-fn current_contiguous_period_per_user(
-    leave: &mut [LeavePeriod],
-    date: NaiveDate,
-) -> Vec<LeavePeriod> {
+fn current_contiguous_period_per_user(leave: &mut [TimeOff], date: NaiveDate) -> Vec<TimeOff> {
     // Our per-user fold relies on leave periods being sorted.
     leave.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
 
     let a = leave
         .iter_mut()
         .filter(|l| l.end >= date) // Ignore leave that has already ended
-        .into_grouping_map_by(|l| l.name.to_string())
+        .into_grouping_map_by(|l| l.employeeId.to_string())
         .fold_first(|a, _, b| {
             if same_or_adjacent_workdays(a.end, b.start) {
                 // Extend a to cover both a and b. From our earlier sort, we know that b.end >= a.end.
@@ -119,14 +183,54 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     // Crossing a weekend
 }
 
-fn send_to_slack(leave: &mut [LeavePeriod], url: String) -> Result<()> {
-    leave.sort_by(|a, b| a.name.cmp(&b.name));
+fn get_employee_info(
+    domain: &str,
+    api_key: &str,
+    time_off: TimeOff,
+) -> Result<TimeOffWithEmployeeInfo> {
+    let url = format!(
+        "https://api.bamboohr.com/api/gateway.php/{}/v1/employees/{}/",
+        domain, time_off.employeeId,
+    );
+
+    let resp = ureq::get(url.as_str())
+        .set("Accept", "application/json")
+        .set("Authorization", &basic_auth_header(api_key, "x"))
+        .call()?
+        .into_json::<serde_json::Value>()?;
+
+    let preferred_name = resp.as_object().and_then(|o| {
+        o.get("preferredName")
+            .and_then(|n| n.as_str().map(|s| s.to_string()))
+    });
+
+    Ok(TimeOffWithEmployeeInfo {
+        employee_preferred_name: preferred_name,
+        time_off,
+    })
+}
+
+fn send_to_slack(
+    holidays: &mut [Holiday],
+    time_off: &mut [TimeOffWithEmployeeInfo],
+    url: String,
+) -> Result<()> {
+    holidays.sort_by(|a, b| {
+        a.start
+            .cmp(&b.start)
+            .then(a.end.cmp(&b.end))
+            .then(a.name.cmp(&b.name))
+    });
+    time_off.sort_by(|a, b| {
+        a.employee_preferred_name
+            .cmp(&b.employee_preferred_name)
+            .then(a.time_off.employeeId.cmp(&b.time_off.employeeId))
+    });
 
     let mut message_blocks: Vec<serde_json::Value> = Vec::new();
 
-    let holidays: Vec<serde_json::Value> = leave
+    let holidays: Vec<serde_json::Value> = holidays
         .iter()
-        .filter(|l| l.r#type == "holiday")
         .map(|l| {
             ureq::json!({
                 "type": "rich_text_section",
@@ -140,26 +244,25 @@ fn send_to_slack(leave: &mut [LeavePeriod], url: String) -> Result<()> {
         })
         .collect();
 
-    let time_off: Vec<serde_json::Value> = leave
+    let time_off: Vec<serde_json::Value> = time_off
         .iter()
-        .filter(|l| l.r#type == "timeOff")
         .map(|l| {
             let mut elements: Vec<serde_json::Value> = Vec::new();
 
             elements.push(ureq::json!({
                 "type": "text",
-                "text": l.name,
+                "text": l.employee_preferred_name,
                 "style": {
                     "bold": true,
                 }
             }));
 
-            if l.start != l.end {
+            if l.time_off.start != l.time_off.end {
                 elements.push(ureq::json!({
                     "type": "text",
                     "text": format!(
                         " (until {})",
-                        l.end.succ_opt().unwrap().format("%A, %-d %B")
+                        l.time_off.end.succ_opt().unwrap().format("%A, %-d %B")
                     ),
                     "style": {
                         "italic": true,
