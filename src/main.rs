@@ -4,6 +4,7 @@ use chrono::{Datelike, Days, NaiveDate, Weekday};
 use clap::Parser;
 use itertools::Itertools;
 use serde::Deserialize;
+use ureq::OrAnyStatus;
 
 use std::env;
 
@@ -81,6 +82,7 @@ struct Holiday {
 struct TimeOff {
     #[allow(non_snake_case)]
     employeeId: usize, // FIXME can we convince serde to convert?
+    name: String,
     start: NaiveDate,
     end: NaiveDate,
 }
@@ -88,6 +90,14 @@ struct TimeOff {
 struct TimeOffWithEmployeeInfo {
     time_off: TimeOff,
     employee_preferred_name: Option<String>,
+}
+
+impl TimeOffWithEmployeeInfo {
+    fn display_name(&self) -> &str {
+        self.employee_preferred_name
+            .as_ref()
+            .unwrap_or(&self.time_off.name)
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -196,18 +206,26 @@ fn get_employee_info(
     let resp = ureq::get(url.as_str())
         .set("Accept", "application/json")
         .set("Authorization", &basic_auth_header(api_key, "x"))
-        .call()?
-        .into_json::<serde_json::Value>()?;
+        .call();
 
-    let preferred_name = resp.as_object().and_then(|o| {
-        o.get("preferredName")
-            .and_then(|n| n.as_str().map(|s| s.to_string()))
-    });
-
-    Ok(TimeOffWithEmployeeInfo {
-        employee_preferred_name: preferred_name,
-        time_off,
-    })
+    match resp {
+        Ok(resp) => {
+            let json = resp.into_json::<serde_json::Value>()?;
+            let preferred_name = json.as_object().and_then(|o| {
+                o.get("preferredName")
+                    .and_then(|n| n.as_str().map(|s| s.to_string()))
+            });
+            Ok(TimeOffWithEmployeeInfo {
+                employee_preferred_name: preferred_name,
+                time_off,
+            })
+        }
+        Err(ureq::Error::Status(403, _)) => Ok(TimeOffWithEmployeeInfo {
+            employee_preferred_name: None,
+            time_off,
+        }),
+        Err(e) => Err(e.into()),
+    }
 }
 
 fn send_to_slack(
@@ -222,8 +240,8 @@ fn send_to_slack(
             .then(a.name.cmp(&b.name))
     });
     time_off.sort_by(|a, b| {
-        a.employee_preferred_name
-            .cmp(&b.employee_preferred_name)
+        a.display_name()
+            .cmp(b.display_name())
             .then(a.time_off.employeeId.cmp(&b.time_off.employeeId))
     });
 
@@ -251,7 +269,7 @@ fn send_to_slack(
 
             elements.push(ureq::json!({
                 "type": "text",
-                "text": l.employee_preferred_name,
+                "text": l.display_name(),
                 "style": {
                     "bold": true,
                 }
@@ -339,7 +357,17 @@ fn send_to_slack(
         "blocks": message_blocks,
     });
 
-    ureq::post(&url).send_json(message)?;
+    let resp = ureq::post(&url).send_json(&message).or_any_status()?;
+
+    if resp.status() >= 400 {
+        println!(
+            "Warning: slack request failed (status {})",
+            resp.status_text()
+        );
+        println!("request\n{}\n", serde_json::to_string_pretty(&message)?);
+        println!("response\n{}\n", resp.into_string()?);
+        return Err(anyhow::format_err!("request to Slack API failed"));
+    }
 
     Ok(())
 }
