@@ -1,10 +1,13 @@
 use anyhow::Result;
 use base64::Engine;
-use chrono::{Datelike, Days, Months, NaiveDate, Weekday};
+use chrono::{Datelike, Days, NaiveDate, Weekday};
 use clap::Parser;
 use itertools::Itertools;
 use serde::Deserialize;
 use std::env;
+
+// If you take more than a year of leave, we might miss it. Sorry.
+const LEAVE_LOOKAHEAD: Days = Days::new(365);
 
 fn main() {
     let args: Args = Args::parse();
@@ -23,8 +26,6 @@ fn main() {
     println!("sending leave for {}", date);
 
     let mut leave = fetch_leave_from_bamboo(bamboo_company_domain, bamboo_api_key, date).unwrap();
-
-    // println!("{:?}", leave);
 
     let mut leave_per_user = current_contiguous_period_per_user(&mut leave);
 
@@ -66,8 +67,8 @@ fn fetch_leave_from_bamboo(
         .query("start", day.to_string().as_str())
         .query(
             "end",
-            day.checked_add_months(Months::new(12))
-                .expect("invalid date")
+            day.checked_add_days(LEAVE_LOOKAHEAD)
+                .unwrap()
                 .to_string()
                 .as_str(),
         )
@@ -84,6 +85,7 @@ fn fetch_leave_from_bamboo(
 /// - Occur on adjacent days
 /// - Occur with only a weekend in-between.
 fn current_contiguous_period_per_user(leave: &mut [LeavePeriod]) -> Vec<LeavePeriod> {
+    // Our per-user fold relies on leave periods being sorted.
     leave.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
 
     let a = leave
@@ -226,18 +228,6 @@ fn send_to_slack(leave: &mut [LeavePeriod], today: NaiveDate, url: String) -> Re
     let message = ureq::json!({
         "blocks": message_blocks,
     });
-
-    // println!("{}", serde_json::to_string_pretty(&message).unwrap());
-
-    // Uncomment for development and debugging.
-    // match ureq::post(&url).send_json(message) {
-    //     Ok(_response) => Ok(()),
-    //     Err(ureq::Error::Status(_code, response)) => {
-    //         println!("{}", response.into_string().unwrap());
-    //         panic!("huh");
-    //     }
-    //     Err(e) => Err(e.into()),
-    // }
 
     ureq::post(&url).send_json(message)?;
 
