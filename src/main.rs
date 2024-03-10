@@ -226,7 +226,7 @@ fn send_to_slack(leave: &mut [LeavePeriod], url: String) -> Result<()> {
                 "type": "section",
                 "text": {
                     "type": "mrkdwn",
-                    "text": "*Nobody is off today!* :tada:",
+                    "text": "*Nobody is on leave today*",
                 }
             }
         ))
