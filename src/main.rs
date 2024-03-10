@@ -72,6 +72,7 @@ struct Args {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct Holiday {
     name: String,
     start: NaiveDate,
@@ -79,9 +80,10 @@ struct Holiday {
 }
 
 #[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
 struct TimeOff {
     #[allow(non_snake_case)]
-    employeeId: usize, // FIXME can we convince serde to convert?
+    employee_id: usize,
     name: String,
     start: NaiveDate,
     end: NaiveDate,
@@ -168,8 +170,8 @@ fn current_contiguous_period_per_user(leave: &mut [TimeOff], date: NaiveDate) ->
     let a = leave
         .iter_mut()
         .filter(|l| l.end >= date) // Ignore leave that has already ended
-        .into_grouping_map_by(|l| l.employeeId.to_string())
-        .fold_first(|a, _, b| {
+        .into_grouping_map_by(|l| l.employee_id.to_string())
+        .fold_first(|a, _, b: &mut TimeOff| {
             if same_or_adjacent_workdays(a.end, b.start) {
                 // Extend a to cover both a and b. From our earlier sort, we know that b.end >= a.end.
                 a.end = b.end;
@@ -200,7 +202,7 @@ fn get_employee_info(
 ) -> Result<TimeOffWithEmployeeInfo> {
     let url = format!(
         "https://api.bamboohr.com/api/gateway.php/{}/v1/employees/{}/",
-        domain, time_off.employeeId,
+        domain, time_off.employee_id,
     );
 
     let resp = ureq::get(url.as_str())
@@ -242,7 +244,7 @@ fn send_to_slack(
     time_off.sort_by(|a, b| {
         a.display_name()
             .cmp(b.display_name())
-            .then(a.time_off.employeeId.cmp(&b.time_off.employeeId))
+            .then(a.time_off.employee_id.cmp(&b.time_off.employee_id))
     });
 
     let mut message_blocks: Vec<serde_json::Value> = Vec::new();
