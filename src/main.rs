@@ -18,7 +18,7 @@ fn main() {
 
     let date = match args.date {
         Some(date) => {
-            chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").expect("Invalid date argument")
+            chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").expect("Invalid date argument (expected YYYY-MM-DD)")
         }
         None => chrono::Local::now().date_naive(),
     };
@@ -27,9 +27,9 @@ fn main() {
 
     let mut leave = fetch_leave_from_bamboo(bamboo_company_domain, bamboo_api_key, date).unwrap();
 
-    let mut leave_per_user = current_contiguous_period_per_user(&mut leave);
+    let mut leave_per_user = current_contiguous_period_per_user(&mut leave, date);
 
-    send_to_slack(&mut leave_per_user, date, slack_webhook_url).unwrap();
+    send_to_slack(&mut leave_per_user, slack_webhook_url).unwrap();
 }
 
 #[derive(Parser)]
@@ -84,25 +84,32 @@ fn fetch_leave_from_bamboo(
 /// - Occur on the same day
 /// - Occur on adjacent days
 /// - Occur with only a weekend in-between.
-fn current_contiguous_period_per_user(leave: &mut [LeavePeriod]) -> Vec<LeavePeriod> {
+fn current_contiguous_period_per_user(
+    leave: &mut [LeavePeriod],
+    date: NaiveDate,
+) -> Vec<LeavePeriod> {
     // Our per-user fold relies on leave periods being sorted.
     leave.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
 
     let a = leave
         .iter_mut()
+        .filter(|l| l.end <= date) // Ignore leave that has already ended
         .into_grouping_map_by(|l| l.name.to_string())
         .fold_first(|a, _, b| {
-            // Merge a and b if they are the same, adjacent, or separated by a weekend.
             if same_or_adjacent_workdays(a.end, b.start) {
-                // Extend a to cover both a and b.
+                // Extend a to cover both a and b. From our earlier sort, we know that b.end >= a.end.
                 a.end = b.end;
             }
             a
         });
 
-    a.into_values().map(|v| v.clone()).collect_vec()
+    a.into_values()
+        .map(|v| v.clone())
+        .filter(|l| l.includes(date)) // Only include leave that is current.
+        .collect_vec()
 }
 
+/// Returns true if dates are the same, are adjacent, or if they are separated by a weekend.
 fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     let (a, b) = if a <= b { (a, b) } else { (b, a) };
 
@@ -112,14 +119,14 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     // Crossing a weekend
 }
 
-fn send_to_slack(leave: &mut [LeavePeriod], today: NaiveDate, url: String) -> Result<()> {
+fn send_to_slack(leave: &mut [LeavePeriod], url: String) -> Result<()> {
     leave.sort_by(|a, b| a.name.cmp(&b.name));
 
     let mut message_blocks: Vec<serde_json::Value> = Vec::new();
 
     let holidays: Vec<serde_json::Value> = leave
         .iter()
-        .filter(|l| l.r#type == "holiday" && l.includes(today))
+        .filter(|l| l.r#type == "holiday")
         .map(|l| {
             ureq::json!({
                 "type": "rich_text_section",
@@ -135,7 +142,7 @@ fn send_to_slack(leave: &mut [LeavePeriod], today: NaiveDate, url: String) -> Re
 
     let time_off: Vec<serde_json::Value> = leave
         .iter()
-        .filter(|l| l.r#type == "timeOff" && l.includes(today))
+        .filter(|l| l.r#type == "timeOff")
         .map(|l| {
             let mut elements: Vec<serde_json::Value> = Vec::new();
 
