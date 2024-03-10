@@ -85,16 +85,38 @@ struct TimeOff {
     end: NaiveDate,
 }
 
+#[derive(Debug)]
 struct TimeOffWithEmployeeInfo {
     time_off: TimeOff,
-    employee_preferred_name: Option<String>,
+    employee_info: Option<EmployeeInfo>,
 }
 
 impl TimeOffWithEmployeeInfo {
-    fn display_name(&self) -> &str {
-        self.employee_preferred_name
+    fn first_name_from_time_off(&self) -> String {
+        self.time_off
+            .name
+            .split(' ')
+            .next()
+            .unwrap_or("")
+            .to_string()
+    }
+
+    fn first_display_name(&self) -> String {
+        if let Some(info) = &self.employee_info {
+            info.preferred_name
+                .clone()
+                .or(info.first_name.clone())
+                .unwrap_or(self.first_name_from_time_off())
+        } else {
+            self.first_name_from_time_off()
+        }
+    }
+
+    fn last_display_name(&self) -> String {
+        self.employee_info
             .as_ref()
-            .unwrap_or(&self.time_off.name)
+            .and_then(|i| i.last_name.clone())
+            .unwrap_or(self.time_off.name.split(' ').skip(1).join(" "))
     }
 }
 
@@ -191,6 +213,14 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     // Crossing a weekend
 }
 
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct EmployeeInfo {
+    first_name: Option<String>,
+    last_name: Option<String>,
+    preferred_name: Option<String>,
+}
+
 fn get_employee_info(
     domain: &str,
     api_key: &str,
@@ -204,24 +234,24 @@ fn get_employee_info(
     let resp = ureq::get(url.as_str())
         .set("Accept", "application/json")
         .set("Authorization", &basic_auth_header(api_key, "x"))
+        .query("fields", "firstName,lastName,preferredName")
         .call();
 
     match resp {
         Ok(resp) => {
-            let json = resp.into_json::<serde_json::Value>()?;
-            let preferred_name = json.as_object().and_then(|o| {
-                o.get("preferredName")
-                    .and_then(|n| n.as_str().map(|s| s.to_string()))
-            });
+            let employee_info = resp.into_json::<EmployeeInfo>()?;
             Ok(TimeOffWithEmployeeInfo {
-                employee_preferred_name: preferred_name,
+                employee_info: Some(employee_info),
                 time_off,
             })
         }
-        Err(ureq::Error::Status(403, _)) => Ok(TimeOffWithEmployeeInfo {
-            employee_preferred_name: None,
-            time_off,
-        }),
+        Err(ureq::Error::Status(403, _)) => {
+            println!("warning: 403 on employee info fetch");
+            Ok(TimeOffWithEmployeeInfo {
+                employee_info: None,
+                time_off,
+            })
+        }
         Err(e) => Err(e.into()),
     }
 }
@@ -238,8 +268,8 @@ fn send_to_slack(
             .then(a.name.cmp(&b.name))
     });
     time_off.sort_by(|a, b| {
-        a.display_name()
-            .cmp(b.display_name())
+        a.last_display_name()
+            .cmp(&b.last_display_name())
             .then(a.time_off.employee_id.cmp(&b.time_off.employee_id))
     });
 
@@ -267,7 +297,12 @@ fn send_to_slack(
 
             elements.push(ureq::json!({
                 "type": "text",
-                "text": l.display_name(),
+                "text": l.first_display_name() + " ",
+            }));
+
+            elements.push(ureq::json!({
+                "type": "text",
+                "text": l.last_display_name(),
                 "style": {
                     "bold": true,
                 }
