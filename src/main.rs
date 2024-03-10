@@ -93,7 +93,7 @@ fn current_contiguous_period_per_user(
 
     let a = leave
         .iter_mut()
-        .filter(|l| l.end <= date) // Ignore leave that has already ended
+        .filter(|l| l.end >= date) // Ignore leave that has already ended
         .into_grouping_map_by(|l| l.name.to_string())
         .fold_first(|a, _, b| {
             if same_or_adjacent_workdays(a.end, b.start) {
