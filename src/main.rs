@@ -290,9 +290,19 @@ fn send_to_slack(
         })
         .collect();
 
-    let time_off: Vec<serde_json::Value> = time_off
-        .iter()
-        .map(|l| {
+    let mut time_off_by_department: Vec<(Option<String>, Vec<&mut TimeOffWithEmployeeInfo>)> =
+        time_off
+            .iter_mut()
+            .into_group_map_by(|t| t.employee_info.and_then(|e| e.department.clone()))
+            .into_iter()
+            .collect();
+
+    time_off_by_department.sort_by_key(|(department, _)| department.clone());
+
+    let time_off: Vec<Vec<serde_json::Value>> = time_off_by_department
+    .into_iter()
+    .map(|(department, time_off)|{
+        let list_elements: Vec<serde_json::Value> = time_off.into_iter().map(|l| {
             let mut elements: Vec<serde_json::Value> = Vec::new();
 
             elements.push(ureq::json!({
@@ -337,8 +347,31 @@ fn send_to_slack(
                 "type": "rich_text_section",
                 "elements": elements,
             })
-        })
-        .collect();
+        }).collect();
+
+        vec![
+            ureq::json!(
+                {
+                    "type": "section",
+                    "text": {
+                        "type": "mrkdwn",
+                        "text": format!("_{}_", department.unwrap_or("Other departments".to_string()))
+                    }
+                }
+            ),
+            ureq::json!(
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                        "type": "rich_text_list",
+                        "style": "bullet",
+                        "elements": list_elements,
+                    }]
+                }
+            )
+        ]
+    }).collect();
 
     if !holidays.is_empty() {
         message_blocks.push(ureq::json!(
@@ -376,14 +409,8 @@ fn send_to_slack(
                 }
             }
         ));
-        message_blocks.push(ureq::json!({
-            "type": "rich_text",
-            "elements": [{
-                "type": "rich_text_list",
-                "style": "bullet",
-                "elements": time_off,
-            }]
-        }))
+
+        message_blocks.append(&mut time_off.into_iter().flatten().collect());
     }
 
     if message_blocks.is_empty() {
