@@ -6,7 +6,7 @@ use itertools::Itertools;
 use serde::Deserialize;
 use ureq::OrAnyStatus;
 
-use std::env;
+use std::{collections::HashMap, env};
 
 // If you take more than a year of leave, we might miss it. Sorry.
 const LEAVE_LOOKAHEAD: Days = Days::new(365);
@@ -46,9 +46,22 @@ fn main() {
 
     let leave_per_user = current_contiguous_period_per_user(&mut time_off, date);
 
+    let directory = fetch_directory_from_bamboo(&bamboo_company_domain, &bamboo_api_key).unwrap();
+    let directory: HashMap<String, EmployeeInfo> = directory
+        .employees
+        .into_iter()
+        .map(|e| (e.id.clone(), e))
+        .collect();
+
     let mut leave_with_user_info: Vec<TimeOffWithEmployeeInfo> = leave_per_user
-        .iter()
-        .map(|t| get_employee_info(&bamboo_company_domain, &bamboo_api_key, t.clone()).unwrap())
+        .into_iter()
+        .map(|time_off| {
+            let employee_info = directory.get(&time_off.employee_id.to_string());
+            TimeOffWithEmployeeInfo {
+                time_off,
+                employee_info,
+            }
+        })
         .collect();
 
     send_to_slack(
@@ -85,12 +98,12 @@ struct TimeOff {
 }
 
 #[derive(Debug)]
-struct TimeOffWithEmployeeInfo {
+struct TimeOffWithEmployeeInfo<'a> {
     time_off: TimeOff,
-    employee_info: Option<EmployeeInfo>,
+    employee_info: Option<&'a EmployeeInfo>,
 }
 
-impl TimeOffWithEmployeeInfo {
+impl TimeOffWithEmployeeInfo<'_> {
     fn first_name_from_time_off(&self) -> String {
         self.time_off
             .name
@@ -178,6 +191,36 @@ fn fetch_leave_from_bamboo(domain: &str, api_key: &str, day: NaiveDate) -> Resul
     Ok(leave)
 }
 
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct Directory {
+    employees: Vec<EmployeeInfo>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(rename_all = "camelCase")]
+struct EmployeeInfo {
+    id: String,
+    first_name: Option<String>,
+    last_name: Option<String>,
+    preferred_name: Option<String>,
+    department: Option<String>,
+}
+
+fn fetch_directory_from_bamboo(domain: &str, api_key: &str) -> Result<Directory> {
+    let url = format!(
+        "https://api.bamboohr.com/api/gateway.php/{}/v1/employees/directory/",
+        domain
+    );
+    let directory = ureq::get(url.as_str())
+        .set("Accept", "application/json")
+        .set("Authorization", &basic_auth_header(api_key, "x"))
+        .call()?
+        .into_json::<Directory>()?;
+
+    Ok(directory)
+}
+
 /// Returns the first contiguous period of leave for each user (grouping by name).
 ///
 /// Leave periods are adjacent if they:
@@ -216,49 +259,6 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     // Crossing a weekend
 }
 
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct EmployeeInfo {
-    first_name: Option<String>,
-    last_name: Option<String>,
-    preferred_name: Option<String>,
-}
-
-fn get_employee_info(
-    domain: &str,
-    api_key: &str,
-    time_off: TimeOff,
-) -> Result<TimeOffWithEmployeeInfo> {
-    let url = format!(
-        "https://api.bamboohr.com/api/gateway.php/{}/v1/employees/{}/",
-        domain, time_off.employee_id,
-    );
-
-    let resp = ureq::get(url.as_str())
-        .set("Accept", "application/json")
-        .set("Authorization", &basic_auth_header(api_key, "x"))
-        .query("fields", "firstName,lastName,preferredName")
-        .call();
-
-    match resp {
-        Ok(resp) => {
-            let employee_info = resp.into_json::<EmployeeInfo>()?;
-            Ok(TimeOffWithEmployeeInfo {
-                employee_info: Some(employee_info),
-                time_off,
-            })
-        }
-        Err(ureq::Error::Status(status, _)) => {
-            println!("warning: {} on employee info fetch", status);
-            Ok(TimeOffWithEmployeeInfo {
-                employee_info: None,
-                time_off,
-            })
-        }
-        Err(e) => Err(e.into()),
-    }
-}
-
 fn send_to_slack(
     holidays: &mut [Holiday],
     time_off: &mut [TimeOffWithEmployeeInfo],
@@ -271,7 +271,7 @@ fn send_to_slack(
             .then(a.end.cmp(&b.end))
             .then(a.name.cmp(&b.name))
     });
-    time_off.sort_unstable_by(|a, b| a.display_name().cmp(&b.display_name()));
+    time_off.sort_unstable_by_key(|a| a.display_name());
 
     let mut message_blocks: Vec<serde_json::Value> = Vec::new();
 
