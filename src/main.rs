@@ -11,8 +11,6 @@ use std::env;
 // If you take more than a year of leave, we might miss it. Sorry.
 const LEAVE_LOOKAHEAD: Days = Days::new(365);
 
-const PEEK_BAMBOO_RESPONSE: bool = true;
-
 fn main() {
     let args: Args = Args::parse();
 
@@ -119,6 +117,10 @@ impl TimeOffWithEmployeeInfo {
             .and_then(|i| i.last_name.clone())
             .unwrap_or(self.time_off.name.split(' ').skip(1).join(" "))
     }
+
+    fn display_name(&self) -> String {
+        format!("{} {}", self.first_display_name(), self.last_display_name())
+    }
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -172,19 +174,7 @@ fn fetch_leave_from_bamboo(domain: &str, api_key: &str, day: NaiveDate) -> Resul
         )
         .call()?;
 
-    let leave = if PEEK_BAMBOO_RESPONSE {
-        let body = resp.into_json::<serde_json::Value>()?;
-        println!(
-            "\nResponse from BambooHR\n{}\n",
-            serde_json::to_string_pretty(&body)?
-        );
-
-        println!("{:?}", serde_json::from_value::<Vec<Leave>>(body.clone())?);
-        serde_json::from_value::<Vec<Leave>>(body)?
-    } else {
-        resp.into_json::<Vec<Leave>>()?
-    };
-
+    let leave = resp.into_json::<Vec<Leave>>()?;
     Ok(leave)
 }
 
@@ -275,17 +265,13 @@ fn send_to_slack(
     url: String,
     date: NaiveDate,
 ) -> Result<()> {
-    holidays.sort_by(|a, b| {
+    holidays.sort_unstable_by(|a, b| {
         a.start
             .cmp(&b.start)
             .then(a.end.cmp(&b.end))
             .then(a.name.cmp(&b.name))
     });
-    time_off.sort_by(|a, b| {
-        a.last_display_name()
-            .cmp(&b.last_display_name())
-            .then(a.time_off.employee_id.cmp(&b.time_off.employee_id))
-    });
+    time_off.sort_unstable_by(|a, b| a.display_name().cmp(&b.display_name()));
 
     let mut message_blocks: Vec<serde_json::Value> = Vec::new();
 
@@ -311,42 +297,41 @@ fn send_to_slack(
 
             elements.push(ureq::json!({
                 "type": "text",
-                "text": l.first_display_name() + " ",
-            }));
-
-            elements.push(ureq::json!({
-                "type": "text",
-                "text": l.last_display_name(),
+                "text": l.display_name(),
                 "style": {
-                    "bold": true,
+                    "bold": true
                 }
             }));
 
-            elements.push(ureq::json!({
-                "type": "text",
-                "text": format!(
-                    " - until {}",
-                    {
-                        let back = l.time_off.return_date();
+            {
+                let back = l.time_off.return_date();
 
-                        if date.succ_opt().unwrap() == back {
-                            "tomorrow".to_string()
-                        } else if date.checked_add_days(Days::new(7)).unwrap() > back {
-                            // This coming week - use the name of the day of the week.
-                            back.format("%A").to_string()
-                        } else if date.checked_add_days(Days::new(7)).unwrap() == back {
-                            // 7 days away, use the date but with "next".
-                            back.format("next %A").to_string()
-                        } else {
-                            // Further ahead - use the date.
-                            back.format("%-d %B").to_string()
-                        }
+                let return_string = {
+                    if date.succ_opt().unwrap() == back {
+                        "back tomorrow".to_string()
+                    } else if date.checked_add_days(Days::new(7)).unwrap() > back {
+                        // This coming week - use the name of the day of the week.
+                        back.format("until %A").to_string()
+                    } else if date.checked_add_days(Days::new(7)).unwrap() == back {
+                        // 7 days away, use the date but with "next".
+                        back.format("until next %A").to_string()
+                    } else {
+                        // Further ahead - use the date.
+                        back.format("until %-d %B").to_string()
                     }
-                ),
-                "style": {
-                    "italic": true,
-                }
-            }));
+                };
+
+                elements.push(ureq::json!({
+                    "type": "text",
+                    "text": format!(
+                        " - {}",
+                        return_string,
+                    ),
+                    "style": {
+                        "italic": true,
+                    }
+                }))
+            }
 
             ureq::json!({
                 "type": "rich_text_section",
