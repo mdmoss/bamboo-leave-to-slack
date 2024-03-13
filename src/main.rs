@@ -28,14 +28,6 @@ fn main() {
 
     let leave = fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, date).unwrap();
 
-    let mut current_holidays: Vec<Holiday> = leave
-        .iter()
-        .filter_map(|l| match l {
-            Leave::Holiday(h) if h.includes(date) => Some(h.clone()),
-            _ => None,
-        })
-        .collect();
-
     let mut time_off: Vec<TimeOff> = leave
         .iter()
         .filter_map(|l| match l {
@@ -64,27 +56,13 @@ fn main() {
         })
         .collect();
 
-    send_to_slack(
-        &mut current_holidays,
-        &mut leave_with_user_info,
-        slack_webhook_url,
-        date,
-    )
-    .unwrap();
+    send_to_slack(&mut leave_with_user_info, slack_webhook_url, date).unwrap();
 }
 
 #[derive(Parser)]
 struct Args {
     #[arg(long)]
     date: Option<String>,
-}
-
-#[derive(Deserialize, Debug, Clone)]
-#[serde(rename_all = "camelCase")]
-struct Holiday {
-    name: String,
-    start: NaiveDate,
-    end: NaiveDate,
 }
 
 #[derive(Deserialize, Debug, Clone)]
@@ -139,7 +117,6 @@ impl TimeOffWithEmployeeInfo<'_> {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(tag = "type", rename_all = "camelCase")]
 enum Leave {
-    Holiday(Holiday),
     TimeOff(TimeOff),
     #[serde(untagged)]
     Unknown(serde_json::Value),
@@ -160,12 +137,6 @@ impl TimeOff {
         } else {
             self.end.checked_add_days(Days::new(1)).unwrap()
         }
-    }
-}
-
-impl Holiday {
-    fn includes(&self, date: NaiveDate) -> bool {
-        self.start <= date && self.end >= date
     }
 }
 
@@ -260,35 +231,13 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
 }
 
 fn send_to_slack(
-    holidays: &mut [Holiday],
     time_off: &mut [TimeOffWithEmployeeInfo],
     url: String,
     date: NaiveDate,
 ) -> Result<()> {
-    holidays.sort_unstable_by(|a, b| {
-        a.start
-            .cmp(&b.start)
-            .then(a.end.cmp(&b.end))
-            .then(a.name.cmp(&b.name))
-    });
     time_off.sort_unstable_by_key(|a| a.display_name());
 
     let mut message_blocks: Vec<serde_json::Value> = Vec::new();
-
-    let holidays: Vec<serde_json::Value> = holidays
-        .iter()
-        .map(|l| {
-            ureq::json!({
-                "type": "rich_text_section",
-                "elements": [
-                    {
-                        "type": "text",
-                        "text": l.name,
-                    }
-                ]
-            })
-        })
-        .collect();
 
     let mut time_off_by_department: Vec<(Option<String>, Vec<&mut TimeOffWithEmployeeInfo>)> =
         time_off
@@ -372,31 +321,6 @@ fn send_to_slack(
             )
         ]
     }).collect();
-
-    if !holidays.is_empty() {
-        message_blocks.push(ureq::json!(
-            {
-                "type": "header",
-                "text": {
-                    "type": "plain_text",
-                    "text": ":calendar: Holidays",
-                    "emoji": true
-                }
-            }
-        ));
-
-        message_blocks.push(ureq::json!(
-            {
-                "type": "rich_text",
-                "elements": [
-                    {
-                    "type": "rich_text_list",
-                    "style": "bullet",
-                    "elements": holidays,
-                }]
-            }
-        ));
-    }
 
     if !time_off.is_empty() {
         message_blocks.push(ureq::json!(
