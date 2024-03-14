@@ -68,7 +68,6 @@ struct Args {
 #[derive(Deserialize, Debug, Clone)]
 #[serde(rename_all = "camelCase")]
 struct TimeOff {
-    #[allow(non_snake_case)]
     employee_id: usize,
     name: String,
     start: NaiveDate,
