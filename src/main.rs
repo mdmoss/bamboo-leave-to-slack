@@ -32,9 +32,9 @@ fn main() {
     let leave = fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, start_from).unwrap();
 
     let mut time_off: Vec<TimeOff> = leave
-        .iter()
+        .into_iter()
         .filter_map(|l| match l {
-            Leave::TimeOff(t) => Some(t.clone()),
+            Leave::TimeOff(t) => Some(t),
             _ => None,
         })
         .collect();
@@ -121,6 +121,7 @@ impl TimeOffWithEmployeeInfo<'_> {
 enum Leave {
     TimeOff(TimeOff),
     #[serde(untagged)]
+    #[allow(dead_code)]
     Unknown(serde_json::Value),
 }
 
@@ -382,6 +383,8 @@ fn send_to_slack(
     let message = ureq::json!({
         "blocks": message_blocks,
     });
+
+    // println!("{}", serde_json::to_string_pretty(&message).unwrap());
 
     let resp = ureq::post(&url).send_json(&message).or_any_status()?;
 
