@@ -26,7 +26,10 @@ fn main() {
 
     println!("sending leave for {}", date);
 
-    let leave = fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, date).unwrap();
+    // Rewind to the most recent workday, so we can catch different leave records on either side of the weekend.
+    let start_from = most_recent_workday_inclusive(date);
+
+    let leave = fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, start_from).unwrap();
 
     let mut time_off: Vec<TimeOff> = leave
         .iter()
@@ -139,6 +142,10 @@ impl TimeOff {
     }
 }
 
+fn is_workday(day: Weekday) -> bool {
+    return day.num_days_from_monday() <= Weekday::Fri.num_days_from_monday();
+}
+
 fn fetch_leave_from_bamboo(domain: &str, api_key: &str, day: NaiveDate) -> Result<Vec<Leave>> {
     let url = format!(
         "https://api.bamboohr.com/api/gateway.php/{}/v1/time_off/whos_out/",
@@ -201,9 +208,11 @@ fn current_contiguous_period_per_user(leave: &mut [TimeOff], date: NaiveDate) ->
     // Our per-user fold relies on leave periods being sorted.
     leave.sort_by(|a, b| a.start.cmp(&b.start).then(a.end.cmp(&b.end)));
 
+    let most_recent_workday = most_recent_workday_inclusive(date);
+
     let a = leave
         .iter_mut()
-        .filter(|l| l.end >= date) // Ignore leave that has already ended
+        .filter(|l| l.end >= most_recent_workday) // Ignore leave that has already ended
         .into_grouping_map_by(|l| l.employee_id.to_string())
         .fold_first(|a, _, b: &mut TimeOff| {
             if same_or_adjacent_workdays(a.end, b.start) {
@@ -215,7 +224,8 @@ fn current_contiguous_period_per_user(leave: &mut [TimeOff], date: NaiveDate) ->
 
     a.into_values()
         .map(|v| v.clone())
-        .filter(|l| l.includes(date)) // Only include leave that is current.
+        .filter(|l| l.includes(date)) // Ignore leave that has already ended
+        .filter(|l| l.includes(next_workday_inclusive(date))) // Don't include time off ending on the current weekend.
         .collect_vec()
 }
 
@@ -227,6 +237,27 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
     a.succ_opt().is_some_and(|aa| aa == b) || // Next day
     (a.weekday() == Weekday::Fri && a.checked_add_days(Days::new(3)).is_some_and(|aa| aa == b))
     // Crossing a weekend
+}
+
+/// Returns `date` if it is a workday, or the most recent date that was a workday otherwise.
+fn most_recent_workday_inclusive(date: NaiveDate) -> NaiveDate {
+    if !is_workday(date.weekday()) {
+        let days_since_friday = date.weekday().num_days_from_monday() - Weekday::Fri.num_days_from_monday();
+        date.checked_sub_days(Days::new(days_since_friday.into())).unwrap()
+    } else {
+        date
+    }
+}
+
+/// Returns `date` if it is a workday, or the most recent date that was a workday otherwise.
+fn next_workday_inclusive(date: NaiveDate) -> NaiveDate {
+    if !is_workday(date.weekday()) {
+        let days_until_monday = Weekday::Sun.num_days_from_monday() - date.weekday().num_days_from_monday() + 1;
+        let d = date.checked_add_days(Days::new(days_until_monday.into())).unwrap();
+        d
+    } else {
+        date
+    }
 }
 
 fn send_to_slack(
