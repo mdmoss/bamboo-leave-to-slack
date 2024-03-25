@@ -29,7 +29,8 @@ fn main() {
     // Rewind to the most recent workday, so we can catch different leave records on either side of the weekend.
     let start_from = most_recent_workday_inclusive(date);
 
-    let leave = fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, start_from).unwrap();
+    let leave =
+        fetch_leave_from_bamboo(&bamboo_company_domain, &bamboo_api_key, start_from).unwrap();
 
     let mut time_off: Vec<TimeOff> = leave
         .into_iter()
@@ -144,7 +145,7 @@ impl TimeOff {
 }
 
 fn is_workday(day: Weekday) -> bool {
-    return day.num_days_from_monday() <= Weekday::Fri.num_days_from_monday();
+    day.num_days_from_monday() <= Weekday::Fri.num_days_from_monday()
 }
 
 fn fetch_leave_from_bamboo(domain: &str, api_key: &str, day: NaiveDate) -> Result<Vec<Leave>> {
@@ -243,8 +244,10 @@ fn same_or_adjacent_workdays(a: NaiveDate, b: NaiveDate) -> bool {
 /// Returns `date` if it is a workday, or the most recent date that was a workday otherwise.
 fn most_recent_workday_inclusive(date: NaiveDate) -> NaiveDate {
     if !is_workday(date.weekday()) {
-        let days_since_friday = date.weekday().num_days_from_monday() - Weekday::Fri.num_days_from_monday();
-        date.checked_sub_days(Days::new(days_since_friday.into())).unwrap()
+        let days_since_friday =
+            date.weekday().num_days_from_monday() - Weekday::Fri.num_days_from_monday();
+        date.checked_sub_days(Days::new(days_since_friday.into()))
+            .unwrap()
     } else {
         date
     }
@@ -253,9 +256,11 @@ fn most_recent_workday_inclusive(date: NaiveDate) -> NaiveDate {
 /// Returns `date` if it is a workday, or the most recent date that was a workday otherwise.
 fn next_workday_inclusive(date: NaiveDate) -> NaiveDate {
     if !is_workday(date.weekday()) {
-        let days_until_monday = Weekday::Sun.num_days_from_monday() - date.weekday().num_days_from_monday() + 1;
-        let d = date.checked_add_days(Days::new(days_until_monday.into())).unwrap();
-        d
+        let days_until_monday =
+            Weekday::Sun.num_days_from_monday() - date.weekday().num_days_from_monday() + 1;
+
+        date.checked_add_days(Days::new(days_until_monday.into()))
+            .unwrap()
     } else {
         date
     }
