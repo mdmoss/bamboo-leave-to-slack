@@ -6,8 +6,6 @@ BambooHR has a Slack plugin, but it's pretty basic and has some shortcomings. Th
 
 - Posts to a channel for quick reference, rather than requiring users to interact with a bot (minor, but it's a small quality of life improvement).
 
-- Shows holidays, which is useful in a team that spans multiple countries with holidays you might not be aware of.
-
 - Merges consecutive periods of leave, to try and better show when the person on leave will return.
 
 ### Known shortcomings
