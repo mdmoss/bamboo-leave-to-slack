@@ -18,7 +18,7 @@ BambooHR has a Slack plugin, but it's pretty basic and has some shortcomings. Th
 
 ## Setup and configuration
 
-- Download or build a binary (TODO: set up GitHub actions to publish automatically.)
+- Download a binary from [GitHub releases](https://github.com/mdmoss/bamboo-leave-to-slack/releases), or build one yourself (`cargo build --release`).
 
 - Provide three environment variables:
     - `BAMBOO_COMPANY_DOMAIN`: company domain for your BambooHR instance.
@@ -29,4 +29,4 @@ BambooHR has a Slack plugin, but it's pretty basic and has some shortcomings. Th
 
 ### BambooHR API key permissions
 
-If the BambooHR user you use to pull leave information has sufficient permissions, this bot will fetch and display the preferred name for users, rather than the name provided by the leave endpoint. This isn't well tested at this point in time, so your mileage may vary.
+If the BambooHR user you use to pull leave information has sufficient permissions, this bot will fetch and display each user's preferred name, rather than the full name provided by the leave endpoint. This isn't well tested at this point in time, so your mileage may vary.
