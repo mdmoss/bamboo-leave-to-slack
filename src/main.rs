@@ -4,7 +4,6 @@ use chrono::{Datelike, Days, NaiveDate, Weekday};
 use clap::Parser;
 use itertools::Itertools;
 use serde::Deserialize;
-use ureq::OrAnyStatus;
 
 use std::{collections::HashMap, env};
 
@@ -153,9 +152,9 @@ fn fetch_leave_from_bamboo(domain: &str, api_key: &str, day: NaiveDate) -> Resul
         "https://api.bamboohr.com/api/gateway.php/{}/v1/time_off/whos_out/",
         domain
     );
-    let resp = ureq::get(url.as_str())
-        .set("Accept", "application/json")
-        .set("Authorization", &basic_auth_header(api_key, "x"))
+    let mut resp = ureq::get(url.as_str())
+        .header("Accept", "application/json")
+        .header("Authorization", &basic_auth_header(api_key, "x"))
         .query("start", day.to_string().as_str())
         .query(
             "end",
@@ -166,7 +165,7 @@ fn fetch_leave_from_bamboo(domain: &str, api_key: &str, day: NaiveDate) -> Resul
         )
         .call()?;
 
-    let leave = resp.into_json::<Vec<Leave>>()?;
+    let leave = resp.body_mut().read_json::<Vec<Leave>>()?;
     Ok(leave)
 }
 
@@ -192,10 +191,11 @@ fn fetch_directory_from_bamboo(domain: &str, api_key: &str) -> Result<Directory>
         domain
     );
     let directory = ureq::get(url.as_str())
-        .set("Accept", "application/json")
-        .set("Authorization", &basic_auth_header(api_key, "x"))
+        .header("Accept", "application/json")
+        .header("Authorization", &basic_auth_header(api_key, "x"))
         .call()?
-        .into_json::<Directory>()?;
+        .body_mut()
+        .read_json::<Directory>()?;
 
     Ok(directory)
 }
@@ -216,7 +216,7 @@ fn current_contiguous_period_per_user(leave: &mut [TimeOff], date: NaiveDate) ->
         .iter_mut()
         .filter(|l| l.end >= most_recent_workday) // Ignore leave that has already ended
         .into_grouping_map_by(|l| l.employee_id.to_string())
-        .fold_first(|a, _, b: &mut TimeOff| {
+        .reduce(|a, _, b: &mut TimeOff| {
             if same_or_adjacent_workdays(a.end, b.start) {
                 // Extend a to cover both a and b. From our earlier sort, we know that b.end >= a.end.
                 a.end = b.end;
@@ -290,7 +290,7 @@ fn send_to_slack(
         let list_elements: Vec<serde_json::Value> = time_off.into_iter().map(|l| {
             let mut elements: Vec<serde_json::Value> = Vec::new();
 
-            elements.push(ureq::json!({
+            elements.push(serde_json::json!({
                 "type": "text",
                 "text": l.display_name(),
                 "style": {
@@ -316,7 +316,7 @@ fn send_to_slack(
                     }
                 };
 
-                elements.push(ureq::json!({
+                elements.push(serde_json::json!({
                     "type": "text",
                     "text": format!(
                         " - {}",
@@ -328,14 +328,14 @@ fn send_to_slack(
                 }))
             }
 
-            ureq::json!({
+            serde_json::json!({
                 "type": "rich_text_section",
                 "elements": elements,
             })
         }).collect();
 
         vec![
-            ureq::json!(
+            serde_json::json!(
                 {
                     "type": "section",
                     "text": {
@@ -344,7 +344,7 @@ fn send_to_slack(
                     }
                 }
             ),
-            ureq::json!(
+            serde_json::json!(
                 {
                     "type": "rich_text",
                     "elements": [
@@ -359,7 +359,7 @@ fn send_to_slack(
     }).collect();
 
     if !time_off.is_empty() {
-        message_blocks.push(ureq::json!(
+        message_blocks.push(serde_json::json!(
             {
                 "type": "header",
                 "text": {
@@ -374,7 +374,7 @@ fn send_to_slack(
     }
 
     if message_blocks.is_empty() {
-        message_blocks.push(ureq::json!(
+        message_blocks.push(serde_json::json!(
             {
                 "type": "section",
                 "text": {
@@ -385,21 +385,19 @@ fn send_to_slack(
         ))
     }
 
-    let message = ureq::json!({
+    let message = serde_json::json!({
         "blocks": message_blocks,
     });
 
     // println!("{}", serde_json::to_string_pretty(&message).unwrap());
 
-    let resp = ureq::post(&url).send_json(&message).or_any_status()?;
+    let mut resp = ureq::post(&url).send_json(&message)?;
+    let status = resp.status();
 
-    if resp.status() >= 400 {
-        println!(
-            "Warning: slack request failed (status {})",
-            resp.status_text()
-        );
+    if status.is_client_error() || status.is_server_error() {
+        println!("Warning: slack request failed (status {})", status.as_str());
         println!("request\n{}\n", serde_json::to_string_pretty(&message)?);
-        println!("response\n{}\n", resp.into_string()?);
+        println!("response\n{}\n", resp.body_mut().read_to_string()?);
         return Err(anyhow::format_err!("request to Slack API failed"));
     }
 
