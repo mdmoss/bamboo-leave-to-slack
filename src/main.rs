@@ -364,7 +364,7 @@ fn send_to_slack(
                 "type": "header",
                 "text": {
                     "type": "plain_text",
-                    "text": ":wave: On leave",
+                    "text": ":wave: On leave today",
                     "emoji": true
                 }
             }
