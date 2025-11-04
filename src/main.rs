@@ -16,7 +16,6 @@ fn main() {
 
     let bamboo_company_domain = require_from_env("BAMBOO_COMPANY_DOMAIN");
     let bamboo_api_key = require_from_env("BAMBOO_API_KEY");
-    let slack_webhook_url = require_from_env("SLACK_WEBHOOK_URL");
 
     let date = match args.date {
         Some(date) => chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
@@ -66,7 +65,12 @@ fn main() {
         })
         .collect();
 
-    send_to_slack(&mut leave_with_user_info, slack_webhook_url, date).unwrap();
+    if args.dry_run {
+        println!("{:#?}", leave_with_user_info);
+    } else {
+        let slack_webhook_url = require_from_env("SLACK_WEBHOOK_URL");
+        send_to_slack(&mut leave_with_user_info, slack_webhook_url, date).unwrap();
+    }
 }
 
 #[derive(Parser)]
@@ -75,6 +79,8 @@ struct Args {
     date: Option<String>,
     #[arg(long, value_parser = parse_timezone)]
     timezone: Option<Tz>,
+    #[arg(long)]
+    dry_run: bool,
 }
 
 fn parse_timezone(tz: &str) -> Result<Tz, String> {
