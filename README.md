@@ -30,3 +30,9 @@ BambooHR has a Slack plugin, but it's pretty basic and has some shortcomings. Th
 ### BambooHR API key permissions
 
 If the BambooHR user you use to pull leave information has sufficient permissions, this bot will fetch and display each user's preferred name, rather than the full name provided by the leave endpoint. This isn't well tested at this point in time, so your mileage may vary.
+
+### Releasing
+
+- Update version in `Cargo.toml`
+- `git commit -m "Release v0.x.y"
+- `git tag v0.x.y && git push --tags`
