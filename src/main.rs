@@ -1,6 +1,7 @@
 use anyhow::Result;
 use base64::Engine;
 use chrono::{Datelike, Days, NaiveDate, Weekday};
+use chrono_tz::Tz;
 use clap::Parser;
 use itertools::Itertools;
 use serde::Deserialize;
@@ -20,7 +21,13 @@ fn main() {
     let date = match args.date {
         Some(date) => chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d")
             .expect("Invalid date argument (expected YYYY-MM-DD)"),
-        None => chrono::Local::now().date_naive(),
+        None => {
+            if let Some(tz) = args.timezone {
+                chrono::Utc::now().with_timezone(&tz).date_naive()
+            } else {
+                chrono::Local::now().date_naive()
+            }
+        }
     };
 
     println!("sending leave for {}", date);
@@ -66,6 +73,12 @@ fn main() {
 struct Args {
     #[arg(long)]
     date: Option<String>,
+    #[arg(long, value_parser = parse_timezone)]
+    timezone: Option<Tz>,
+}
+
+fn parse_timezone(tz: &str) -> Result<Tz, String> {
+    tz.parse().map_err(|_| format!("Invalid timezone: {}", tz))
 }
 
 #[derive(Deserialize, Debug, Clone)]

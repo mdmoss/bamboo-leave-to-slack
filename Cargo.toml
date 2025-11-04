@@ -10,6 +10,7 @@ repository = "https://github.com/mdmoss/bamboo-leave-to-slack"
 anyhow = "1.0.86"
 base64 = "0.22.1"
 chrono = { version = "0.4.38", features = ["serde"] }
+chrono-tz = "0.10.4"
 clap = { version = "4.5.15", features = ["derive"] }
 itertools = "0.14.0"
 serde = { version = "1.0.207", features = ["derive"] }
